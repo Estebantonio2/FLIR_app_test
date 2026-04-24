@@ -2,6 +2,7 @@ package com.example.flirapptest.main
 
 import android.Manifest
 import android.app.Activity
+import android.os.Environment
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -195,7 +196,7 @@ fun MainScreen(
                         } else {
                             // ESTADO INICIAL O ERROR: Botón para iniciar búsqueda USB
                             Button(
-                                onClick = { viewModel.startDiscovery() },
+                                onClick = { viewModel.startDiscovery(context) },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text("Buscar FLIR C5 (Por Cable USB)")
@@ -216,8 +217,15 @@ fun MainScreen(
                             Spacer(modifier = Modifier.height(16.dp))
 
                             // CONTROLES DEL EXPERIMENTO
+
+                            val outputDirectory = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES)?.absolutePath
+
                             Button(
-                                onClick = { viewModel.startDynamicCaptureSequence() },
+                                onClick = {
+                                    if (outputDirectory != null) {
+                                        viewModel.startDynamicCaptureSequence(context)
+                                    }
+                                },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text("▶ Iniciar Secuencia (10 min)")

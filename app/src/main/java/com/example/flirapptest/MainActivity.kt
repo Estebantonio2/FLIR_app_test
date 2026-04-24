@@ -20,8 +20,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        ThermalSdkAndroid.init(applicationContext)
-        ThermalLog.setLogLevel(ThermalLog.LogLevel.DEBUG)
+        ThermalSdkAndroid.init(applicationContext, ThermalLog.LogLevel.DEBUG)
 
         val viewModel: FLIRViewModel by viewModels()
 
