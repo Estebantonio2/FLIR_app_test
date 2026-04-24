@@ -217,14 +217,9 @@ fun MainScreen(
                             Spacer(modifier = Modifier.height(16.dp))
 
                             // CONTROLES DEL EXPERIMENTO
-
-                            val outputDirectory = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES)?.absolutePath
-
                             Button(
                                 onClick = {
-                                    if (outputDirectory != null) {
-                                        viewModel.startDynamicCaptureSequence(context)
-                                    }
+                                    viewModel.startDynamicCaptureSequence(context)
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
