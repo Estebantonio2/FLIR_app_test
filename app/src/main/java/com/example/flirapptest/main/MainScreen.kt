@@ -199,7 +199,7 @@ fun MainScreen(
                                 onClick = { viewModel.startDiscovery(context) },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Buscar FLIR (Por Cable USB)")
+                                Text("Buscar FLIR")
                             }
                         }
                     } else {
@@ -209,7 +209,7 @@ fun MainScreen(
                                 onClick = { viewModel.triggerCameraCapture() },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("📸 Probar Captura Manual")
+                                Text("Probar Captura Manual")
                             }
 
                             Spacer(modifier = Modifier.height(16.dp))
@@ -223,7 +223,7 @@ fun MainScreen(
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("▶ Iniciar Secuencia (10 min)")
+                                Text("Iniciar Secuencia (10 min)")
                             }
                         } else {
                             // BOTÓN DE PÁNICO / DETENER
@@ -232,7 +232,7 @@ fun MainScreen(
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("⏹ Detener Experimento")
+                                Text("Detener Experimento")
                             }
                         }
                     }

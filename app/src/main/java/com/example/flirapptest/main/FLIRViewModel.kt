@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.flir.thermalsdk.ErrorCode
+import com.flir.thermalsdk.ErrorCodeException
 import com.flir.thermalsdk.androidsdk.image.BitmapAndroid
 import com.flir.thermalsdk.androidsdk.live.connectivity.UsbPermissionHandler
 import com.flir.thermalsdk.live.Camera
@@ -20,12 +21,15 @@ import com.flir.thermalsdk.live.remote.OnReceived
 import com.flir.thermalsdk.live.remote.OnRemoteError
 import com.flir.thermalsdk.live.streaming.ThermalStreamer
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.net.InetAddress
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 enum class ConnectionState {
     DISCONNECTED, DISCOVERING, CONNECTING, CONNECTED, ERROR
@@ -72,8 +76,33 @@ class FLIRViewModel: ViewModel() {
     var flirCamera: Camera? = null
         private set
 
+    private var appContext: Context? = null
+
+    private fun writeLog(tag: String, message: String, throwable: Throwable? = null) {
+        val context = appContext ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val dir = context.getExternalFilesDir(null)
+                val file = File(dir, "flir_debug_log.txt")
+                val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(
+                    Date()
+                )
+                val logEntry = "[$timestamp] [$tag] $message\n${throwable?.stackTraceToString() ?: ""}\n---\n"
+
+                FileOutputStream(file, true).use {
+                    it.write(logEntry.toByteArray())
+                }
+                Log.d("FLIR_LOG_FILE", "Escrito en log: $message")
+            } catch (e: Exception) {
+                Log.e("FLIR_LOG_FILE", "Error escribiendo log", e)
+            }
+        }
+    }
+
     // INICIAR LA BÚSQUEDA (DISCOVERY)
     fun startDiscovery(context: Context) {
+        this.appContext = context.applicationContext // <--- Guarda el contexto aquí primero
+        writeLog("INFO", "Iniciando búsqueda de cámara...")
         _errorMessage.value = null
         _connectionState.value = ConnectionState.DISCOVERING
         _statusMessage.value = "Buscando cámara FLIR por cable USB..."
@@ -96,6 +125,7 @@ class FLIRViewModel: ViewModel() {
             }
 
             override fun onDiscoveryError(commInterface: CommunicationInterface?, errorCode: ErrorCode?) {
+                writeLog("ERROR_DISCOVERY", "Interface: $commInterface, Error: $errorCode")
                 viewModelScope.launch {
                     _connectionState.value = ConnectionState.ERROR
                     _statusMessage.value = "Error de búsqueda"
@@ -120,41 +150,6 @@ class FLIRViewModel: ViewModel() {
         _connectionState.value = ConnectionState.DISCONNECTED
         _statusMessage.value = "Búsqueda detenida por el usuario."
         Log.d("FLIR_TESIS", "Búsqueda Wi-Fi cancelada manualmente.")
-    }
-
-    fun connectByIpAddress(ipString: String = "192.168.0.1") { // Revisa la IP en la config de la C5
-        flirCamera?.disconnect()
-        _connectionState.value = ConnectionState.CONNECTING
-        _statusMessage.value = "Conectando directo a IP: $ipString..."
-
-        flirCamera = Camera()
-
-        val connectionListener = ConnectionStatusListener { errorCode ->
-            viewModelScope.launch {
-                _connectionState.value = ConnectionState.DISCONNECTED
-                _statusMessage.value = "Desconectado: $errorCode"
-            }
-        }
-
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val address = InetAddress.getByName(ipString)
-
-                flirCamera?.connect(address, connectionListener, null)
-
-                withContext(Dispatchers.Main) {
-                    _connectionState.value = ConnectionState.CONNECTED
-                    _statusMessage.value = "¡Conectado por IP!"
-                    startStream()
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    _connectionState.value = ConnectionState.ERROR
-                    _statusMessage.value = "Error IP: ${e.message}"
-                    Log.e("FLIR_TESIS", "Fallo al conectar por IP", e)
-                }
-            }
-        }
     }
 
     // CONECTARSE A LA CÁMARA
@@ -196,6 +191,7 @@ class FLIRViewModel: ViewModel() {
         flirCamera = Camera()
 
         val connectionListener = ConnectionStatusListener { errorCode ->
+            writeLog("CONNECTION_STATUS", "Estado: $errorCode")
             viewModelScope.launch {
                 _connectionState.value = ConnectionState.DISCONNECTED
                 _statusMessage.value = "Se perdió la conexión: $errorCode"
@@ -204,6 +200,7 @@ class FLIRViewModel: ViewModel() {
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                writeLog("INFO", "Intentando connect() con la cámara...")
                 flirCamera?.connect(identity, connectionListener, null)
 
                 withContext(Dispatchers.Main) {
@@ -212,6 +209,7 @@ class FLIRViewModel: ViewModel() {
                     startStream()
                 }
             } catch (e: Exception) {
+                writeLog("CRITICAL_EXCEPTION", "Fallo en connect()", e)
                 withContext(Dispatchers.Main) {
                     _connectionState.value = ConnectionState.ERROR
                     _statusMessage.value = "Fallo al conectar: ${e.message}"
@@ -250,74 +248,101 @@ class FLIRViewModel: ViewModel() {
         val streams = flirCamera?.streams
 
         if (streams.isNullOrEmpty()) {
-            Log.e("FLIR_TESIS", "No se encontraron flujos de video (Streams) en esta cámara.")
+            _statusMessage.value = "No se encontraron flujos de video."
+            Log.e("FLIR_TESIS", "No se encontraron flujos de video en esta cámara.")
             return
         }
 
-        val videoStream = streams[0]
+        // Asegurarse de tomar un formato de stream térmico
+        val videoStream = streams.find { it.isThermal } ?: streams[0]
         thermalStreamer = ThermalStreamer(videoStream)
 
         val onReceivedListener = OnReceived<Void> {
-            thermalStreamer?.update()
-
-            // withThermalImage proporciona acceso seguro a la imagen (thread-safe)
-            thermalStreamer?.withThermalImage { thermalImage ->
-                // 1. Renderizado para la pantalla
-                val javaBuffer = thermalImage.image
-                val androidBitmap = BitmapAndroid.createBitmap(javaBuffer).bitMap
-                _thermalBitmap.value = androidBitmap
-
-                // 2. Lógica de captura y guardado en memoria del celular
-                if (shouldTakeSnapshot) {
-                    // Apagamos la bandera inmediatamente para evitar capturas dobles
-                    shouldTakeSnapshot = false
-                    snapshotCounter++
-
+            // Enviar el procesamiento a un hilo de fondo (IO) para no bloquear la recepción
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    // 1. ACTUALIZAR EL STREAMER (Obligatorio)
                     try {
-                        // Generar la ruta absoluta del archivo
-                        val fileName = "disipacion_huella_$snapshotCounter.jpg"
-                        val absolutePath = "$currentOutputDirectory/$fileName"
-
-                        // Guarda la imagen térmica radiométrica
-                        thermalImage.saveAs(absolutePath)
-                        Log.d("FLIR_TESIS", "Snapshot térmico guardado exitosamente en: $absolutePath")
-                    } catch (e: Exception) {
-                        Log.e("FLIR_TESIS", "Error al guardar el snapshot térmico: ${e.message}")
+                        thermalStreamer?.update()
+                    } catch (e: ErrorCodeException) {
+                        // Ignorar errores de los primeros frames de radiometría
+                        Log.w("FLIR_TESIS", "Error al actualizar frame: ${e.message}")
+                        return@launch
+                    } catch (e: NullPointerException) {
+                        return@launch
                     }
+
+                    // Obtener el buffer de la imagen actual
+                    val imageBuffer = thermalStreamer?.image ?: return@launch
+
+                    thermalStreamer?.withThermalImage { thermalImage ->
+                        if (thermalImage == null) return@withThermalImage
+
+                        // 2. Renderizado para la pantalla
+                        try {
+                            val bitmapWrapper = BitmapAndroid.createBitmap(imageBuffer)
+                            val androidBitmap = bitmapWrapper?.bitMap
+
+                            if (androidBitmap != null) {
+                                // Actualizamos el estado Compose en el hilo principal
+                                viewModelScope.launch(Dispatchers.Main) {
+                                    _thermalBitmap.value = androidBitmap
+                                }
+                            }
+
+                            // 3. Lógica de captura y guardado
+                            if (shouldTakeSnapshot) {
+                                shouldTakeSnapshot = false
+                                snapshotCounter++
+                                try {
+                                    val fileName = "disipacion_huella_$snapshotCounter.jpg"
+                                    val absolutePath = "$currentOutputDirectory/$fileName"
+
+                                    thermalImage.saveAs(absolutePath)
+
+                                    viewModelScope.launch(Dispatchers.Main) {
+                                        _statusMessage.value = absolutePath
+                                    }
+                                    Log.d("FLIR_TESIS", "Snapshot guardado en: $absolutePath")
+                                } catch (e: Exception) {
+                                    Log.e("FLIR_TESIS", "Fallo al guardar snapshot", e)
+                                }
+                            }
+
+                        } catch (e: IllegalArgumentException) {
+                            // Ignorar frames corruptos o vacíos
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("FLIR_TESIS", "Error crítico procesando frame", e)
                 }
             }
         }
 
         val onErrorListener = OnRemoteError { errorCode ->
-            Log.e("FLIR_TESIS", "Error crítico en el stream de video: $errorCode")
+            Log.e("FLIR_TESIS", "Error en video: $errorCode")
+            viewModelScope.launch(Dispatchers.Main) {
+                _statusMessage.value = "Error crítico en el stream: $errorCode"
+            }
         }
 
         try {
             videoStream.start(onReceivedListener, onErrorListener)
-            Log.d("FLIR_TESIS", "Suscripción al stream exitosa.")
         } catch (e: Exception) {
-            Log.e("FLIR_TESIS", "Error al iniciar el stream: ${e.message}")
+            Log.e("FLIR_TESIS", "Excepción al iniciar stream", e)
         }
     }
 
     fun triggerCameraCapture() {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                // 1. Accedemos al Control Remoto
-                val remote = flirCamera?.remoteControl
+        // Para la FLIR One Pro, no usamos el control de almacenamiento interno.
+        // Simplemente activamos la bandera para que el hilo de streaming
+        // intercepte y guarde el próximo frame directamente en el celular.
 
-                // 2. Obtenemos el componente de Almacenamiento (Storage)
-                val storage = remote?.storage
+        shouldTakeSnapshot = true
 
-                // 3. Ejecutamos el snapshot
-                // Esto ordena a la C5 capturar y procesar el archivo interno
-                storage?.snapshot()
-
-                Log.d("FLIR_TESIS", "Orden de snapshot enviada a la memoria de la cámara.")
-            } catch (e: Exception) {
-                Log.e("FLIR_TESIS", "Error al ejecutar snapshot: ${e.message}")
-            }
-        }
+        // Registramos la acción en tus logs para depuración
+        writeLog("INFO", "Señal manual enviada para capturar el próximo frame térmico.")
+        Log.d("FLIR_TESIS", "Señal enviada para guardar el próximo frame térmico.")
     }
 
     // Recibe la ruta absoluta desde tu Activity/Fragment (ej. applicationContext.getExternalFilesDir(null)?.absolutePath)
