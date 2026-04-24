@@ -199,7 +199,7 @@ fun MainScreen(
                                 onClick = { viewModel.startDiscovery(context) },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Buscar FLIR C5 (Por Cable USB)")
+                                Text("Buscar FLIR (Por Cable USB)")
                             }
                         }
                     } else {
