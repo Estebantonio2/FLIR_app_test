@@ -2,7 +2,6 @@ package com.example.flirapptest.main
 
 import android.Manifest
 import android.app.Activity
-import android.os.Environment
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -17,6 +16,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -25,6 +27,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -39,7 +42,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -52,12 +57,13 @@ fun MainScreen(
     val statusMessage by viewModel.statusMessage.collectAsState()
     val thermalBitmap by viewModel.thermalBitmap.collectAsState()
     val isRunning by viewModel.isAutoCaptureRunningState.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
 
     var hasPermissions by remember { mutableStateOf(false) }
 
-    val errorMessage by viewModel.errorMessage.collectAsState()
+    var intervalText by remember { mutableStateOf("10") }
+    var durationText by remember { mutableStateOf("1") }
 
-    // PREVENCIÓN DE APAGADO: Mantiene la pantalla activa durante el experimento
     DisposableEffect(isRunning) {
         val window = (context as? Activity)?.window
         if (isRunning) {
@@ -68,9 +74,6 @@ fun MainScreen(
         }
     }
 
-    // GESTIÓN DE PERMISOS BÁSICOS
-    // El SDK de FLIR suele requerir permisos de ubicación genéricos para inicializar,
-    // incluso por USB, dependiendo de la versión de Android.
     val permissionsToRequest = arrayOf(
         Manifest.permission.ACCESS_FINE_LOCATION,
         Manifest.permission.ACCESS_COARSE_LOCATION
@@ -87,7 +90,8 @@ fun MainScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
@@ -100,15 +104,15 @@ fun MainScreen(
                 Text("Solicitando permisos para la investigación...", textAlign = TextAlign.Center)
             }
         } else {
-            // 1. CABECERA DE ESTADO
             Text(
-                text = if (connectionState == ConnectionState.CONNECTED) "Cámara Conectada (USB)" else "Estado: $statusMessage",
+                text = if (connectionState == ConnectionState.CONNECTED) "Cámara Conectada" else "Estado: $statusMessage",
                 style = MaterialTheme.typography.headlineSmall,
                 color = if (connectionState == ConnectionState.CONNECTED) Color(0xFF4CAF50) else Color.Unspecified,
-                textAlign = TextAlign.Center
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
 
-            // 2. VISOR TÉRMICO
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -162,7 +166,6 @@ fun MainScreen(
                 }
             }
 
-            // 3. PANEL DE CONTROL (Limpio y directo para USB)
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(4.dp)
@@ -171,13 +174,18 @@ fun MainScreen(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(text = statusMessage, textAlign = TextAlign.Center)
+                    Text(
+                        text = statusMessage,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth()
+                    )
 
                     Spacer(modifier = Modifier.height(16.dp))
 
                     if (connectionState != ConnectionState.CONNECTED) {
                         if (connectionState == ConnectionState.DISCOVERING) {
-                            // MIENTRAS BUSCA
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 CircularProgressIndicator(modifier = Modifier.size(48.dp))
                                 Spacer(modifier = Modifier.height(16.dp))
@@ -194,7 +202,6 @@ fun MainScreen(
                                 }
                             }
                         } else {
-                            // ESTADO INICIAL O ERROR: Botón para iniciar búsqueda USB
                             Button(
                                 onClick = { viewModel.startDiscovery(context) },
                                 modifier = Modifier.fillMaxWidth()
@@ -204,29 +211,48 @@ fun MainScreen(
                         }
                     } else {
                         if (!isRunning) {
-                            // CONTROLES DE PREPARACIÓN
                             OutlinedButton(
                                 onClick = { viewModel.triggerCameraCapture() },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Probar Captura Manual")
+                                Text("Captura Manual Individual")
                             }
 
                             Spacer(modifier = Modifier.height(16.dp))
                             HorizontalDivider()
                             Spacer(modifier = Modifier.height(16.dp))
 
-                            // CONTROLES DEL EXPERIMENTO
+                            OutlinedTextField(
+                                value = intervalText,
+                                onValueChange = { intervalText = it },
+                                label = { Text("Intervalo en segundos") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            OutlinedTextField(
+                                value = durationText,
+                                onValueChange = { durationText = it },
+                                label = { Text("Duración en minutos") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
                             Button(
                                 onClick = {
-                                    viewModel.startDynamicCaptureSequence(context)
+                                    val interval = intervalText.toIntOrNull() ?: 10
+                                    val duration = durationText.toIntOrNull() ?: 1
+                                    viewModel.startDynamicCaptureSequence(interval, duration)
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Iniciar Secuencia (10 min)")
+                                Text("Iniciar Secuencia")
                             }
                         } else {
-                            // BOTÓN DE PÁNICO / DETENER
                             Button(
                                 onClick = { viewModel.stopSequence() },
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
