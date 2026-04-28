@@ -9,8 +9,8 @@ import com.flir.thermalsdk.ErrorCode
 import com.flir.thermalsdk.ErrorCodeException
 import com.flir.thermalsdk.androidsdk.image.BitmapAndroid
 import com.flir.thermalsdk.androidsdk.live.connectivity.UsbPermissionHandler
-import com.flir.thermalsdk.image.Palette
-import com.flir.thermalsdk.image.PaletteManager
+import com.flir.thermalsdk.image.TemperatureUnit
+import com.flir.thermalsdk.image.ThermalValue
 import com.flir.thermalsdk.image.fusion.FusionMode
 import com.flir.thermalsdk.live.Camera
 import com.flir.thermalsdk.live.CommunicationInterface
@@ -65,14 +65,6 @@ class FLIRViewModel : ViewModel() {
         private set
 
     private var appContext: Context? = null
-
-    private var currentPalette: Palette? = null
-
-    init {
-        currentPalette = PaletteManager.getDefaultPalettes().find {
-            it.name.equals("iron", ignoreCase = true)
-        }
-    }
 
     fun clearError() {
         _errorMessage.value = null
@@ -242,11 +234,18 @@ class FLIRViewModel : ViewModel() {
             thermalStreamer?.withThermalImage { thermalImage ->
                 if (thermalImage == null) return@withThermalImage
 
-                currentPalette?.let {
-                    thermalImage.palette = it
-                }
-
                 thermalImage.fusion?.setFusionMode(FusionMode.THERMAL_ONLY)
+
+//                val scale = thermalImage.scale
+//                if (scale != null) {
+//
+//                    scale.enableAutoAdjust(false)
+//
+//                    val minTemp = ThermalValue(20.0, TemperatureUnit.CELSIUS)
+//                    val maxTemp = ThermalValue(35.0, TemperatureUnit.CELSIUS)
+//
+//                    scale.setRange(minTemp, maxTemp)
+//                }
 
                 if (snapshotRequested) {
                     try {
