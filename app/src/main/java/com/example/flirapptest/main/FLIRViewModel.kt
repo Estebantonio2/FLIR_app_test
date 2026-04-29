@@ -159,10 +159,23 @@ class FLIRViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 flirCamera?.connect(identity, connectionListener, null)
+
+                // Validación de los rangos físicos del sensor después de conectar
+                val tempRanges = flirCamera?.remoteControl?.temperatureRange?.ranges()?.sync
+                val activeIndex = flirCamera?.remoteControl?.temperatureRange?.selectedIndex()?.sync
+
+                if (tempRanges != null && activeIndex != null) {
+                    val rangoActivo = tempRanges[activeIndex]
+                    val min = rangoActivo.first.asCelsius().value
+                    val max = rangoActivo.second.asCelsius().value
+
+                    _statusMessage.value = "Hardware configurado en el rango: $min a $max grados Celsius"
+                }
+
                 withContext(Dispatchers.Main) {
                     _connectionState.value = ConnectionState.CONNECTED
-                    _statusMessage.value = "Cámara lista"
-                    startStream()
+//                    _statusMessage.value = "Cámara lista"
+//                    startStream()
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -229,6 +242,8 @@ class FLIRViewModel : ViewModel() {
                 return
             }
 
+            thermalStreamer?.isAutoScale = false
+
             val imageBuffer = thermalStreamer?.image ?: return
 
             thermalStreamer?.withThermalImage { thermalImage ->
@@ -236,16 +251,12 @@ class FLIRViewModel : ViewModel() {
 
                 thermalImage.fusion?.setFusionMode(FusionMode.THERMAL_ONLY)
 
-//                val scale = thermalImage.scale
-//                if (scale != null) {
-//
-//                    scale.enableAutoAdjust(false)
-//
-//                    val minTemp = ThermalValue(20.0, TemperatureUnit.CELSIUS)
-//                    val maxTemp = ThermalValue(35.0, TemperatureUnit.CELSIUS)
-//
-//                    scale.setRange(minTemp, maxTemp)
-//                }
+                val scale = thermalImage.scale
+                if (scale != null) {
+                    val minTemp = ThermalValue(20.0, TemperatureUnit.CELSIUS)
+                    val maxTemp = ThermalValue(35.0, TemperatureUnit.CELSIUS)
+                    scale.setRange(minTemp, maxTemp)
+                }
 
                 if (snapshotRequested) {
                     try {
