@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -27,7 +26,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -42,7 +40,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -60,9 +57,6 @@ fun MainScreen(
     val errorMessage by viewModel.errorMessage.collectAsState()
 
     var hasPermissions by remember { mutableStateOf(false) }
-
-    var intervalText by remember { mutableStateOf("10") }
-    var durationText by remember { mutableStateOf("1") }
 
     DisposableEffect(isRunning) {
         val window = (context as? Activity)?.window
@@ -222,32 +216,8 @@ fun MainScreen(
                             HorizontalDivider()
                             Spacer(modifier = Modifier.height(16.dp))
 
-                            OutlinedTextField(
-                                value = intervalText,
-                                onValueChange = { intervalText = it },
-                                label = { Text("Intervalo en segundos") },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            OutlinedTextField(
-                                value = durationText,
-                                onValueChange = { durationText = it },
-                                label = { Text("Duración en minutos") },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-
-                            Spacer(modifier = Modifier.height(16.dp))
-
                             Button(
-                                onClick = {
-                                    val interval = intervalText.toIntOrNull() ?: 10
-                                    val duration = durationText.toIntOrNull() ?: 1
-                                    viewModel.startDynamicCaptureSequence(interval, duration)
-                                },
+                                onClick = { viewModel.startDynamicCaptureSequence() },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text("Iniciar Secuencia")

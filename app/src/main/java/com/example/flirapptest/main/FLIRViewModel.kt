@@ -160,7 +160,6 @@ class FLIRViewModel : ViewModel() {
             try {
                 flirCamera?.connect(identity, connectionListener, null)
 
-                // Validación de los rangos físicos del sensor después de conectar
                 val tempRanges = flirCamera?.remoteControl?.temperatureRange?.ranges()?.sync
                 val activeIndex = flirCamera?.remoteControl?.temperatureRange?.selectedIndex()?.sync
 
@@ -253,7 +252,7 @@ class FLIRViewModel : ViewModel() {
 
                 val scale = thermalImage.scale
                 if (scale != null) {
-                    val minTemp = ThermalValue(20.0, TemperatureUnit.CELSIUS)
+                    val minTemp = ThermalValue(15.0, TemperatureUnit.CELSIUS)
                     val maxTemp = ThermalValue(35.0, TemperatureUnit.CELSIUS)
                     scale.setRange(minTemp, maxTemp)
                 }
@@ -302,6 +301,65 @@ class FLIRViewModel : ViewModel() {
         }
     }
 
+    fun startDynamicCaptureSequence() {
+        if (isAutoCaptureRunning) return
+
+        if (currentOutputDirectory == null) {
+            _errorMessage.value = "Directorio no inicializado"
+            return
+        }
+
+        isAutoCaptureRunning = true
+        _isAutoCaptureRunningState.value = true
+        snapshotCounter = 0
+
+        val captureSchedule = mutableListOf<Int>()
+
+        for (t in 0..60 step 5) captureSchedule.add(t)
+
+        for (t in 70..300 step 10) captureSchedule.add(t)
+
+        for (t in 330..600 step 30) captureSchedule.add(t)
+
+        val totalCaptures = captureSchedule.size
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                var previousCaptureTime = 0
+
+                for (i in 0 until totalCaptures) {
+                    if (!isAutoCaptureRunning) break
+
+                    val currentCaptureTime = captureSchedule[i]
+                    val delaySeconds = currentCaptureTime - previousCaptureTime
+
+                    if (delaySeconds > 0) {
+                        delay(delaySeconds * 1000L)
+                    }
+
+                    snapshotRequested = true
+
+                    viewModelScope.launch(Dispatchers.Main) {
+                        _statusMessage.value = "Captura ${i + 1} de $totalCaptures (T=${currentCaptureTime}s)"
+                    }
+
+                    previousCaptureTime = currentCaptureTime
+                }
+
+                if (isAutoCaptureRunning) {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        _statusMessage.value = "Secuencia completada ($totalCaptures capturas)"
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("FLIR_TESIS", "Error en secuencia", e)
+            } finally {
+                isAutoCaptureRunning = false
+                _isAutoCaptureRunningState.value = false
+            }
+        }
+    }
+
     private fun exportToPublicStorage(context: Context, privateFile: java.io.File) {
         val resolver = context.contentResolver
         val contentValues = android.content.ContentValues().apply {
@@ -335,50 +393,7 @@ class FLIRViewModel : ViewModel() {
         snapshotRequested = true
     }
 
-    fun startDynamicCaptureSequence(intervalSeconds: Int, durationMinutes: Int) {
-        if (isAutoCaptureRunning) return
 
-        if (currentOutputDirectory == null) {
-            _errorMessage.value = "Directorio no inicializado"
-            return
-        }
-
-        isAutoCaptureRunning = true
-        _isAutoCaptureRunningState.value = true
-        snapshotCounter = 0
-
-        val totalDurationSeconds = durationMinutes * 60
-        val totalCaptures = totalDurationSeconds / intervalSeconds
-
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                for (i in 1..totalCaptures) {
-                    if (!isAutoCaptureRunning) break
-
-                    snapshotRequested = true
-
-                    viewModelScope.launch(Dispatchers.Main) {
-                        _statusMessage.value = "Captura automática $i de $totalCaptures"
-                    }
-
-                    if (i < totalCaptures) {
-                        delay(intervalSeconds * 1000L)
-                    }
-                }
-
-                if (isAutoCaptureRunning) {
-                    viewModelScope.launch(Dispatchers.Main) {
-                        _statusMessage.value = "Secuencia completada"
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("FLIR_TESIS", "Error en secuencia", e)
-            } finally {
-                isAutoCaptureRunning = false
-                _isAutoCaptureRunningState.value = false
-            }
-        }
-    }
 
     fun stopSequence() {
         isAutoCaptureRunning = false
