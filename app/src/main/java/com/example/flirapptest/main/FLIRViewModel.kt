@@ -9,6 +9,7 @@ import com.flir.thermalsdk.ErrorCode
 import com.flir.thermalsdk.ErrorCodeException
 import com.flir.thermalsdk.androidsdk.image.BitmapAndroid
 import com.flir.thermalsdk.androidsdk.live.connectivity.UsbPermissionHandler
+import com.flir.thermalsdk.image.PaletteManager
 import com.flir.thermalsdk.image.TemperatureUnit
 import com.flir.thermalsdk.image.ThermalValue
 import com.flir.thermalsdk.image.fusion.FusionMode
@@ -55,6 +56,7 @@ class FLIRViewModel : ViewModel() {
     private var thermalStreamer: ThermalStreamer? = null
 
     private var isAutoCaptureRunning = false
+    private var currentSessionFolder = "capturas_manuales"
     private val _isAutoCaptureRunningState = MutableStateFlow(false)
     val isAutoCaptureRunningState = _isAutoCaptureRunningState.asStateFlow()
 
@@ -239,10 +241,16 @@ class FLIRViewModel : ViewModel() {
 
                 thermalImage.fusion?.setFusionMode(FusionMode.THERMAL_ONLY)
 
+                val ironPalette = PaletteManager.getDefaultPalettes().firstOrNull {
+                    it.name.equals("iron", ignoreCase = true)
+                } ?: PaletteManager.getDefaultPalettes().first()
+
+                thermalImage.palette = ironPalette
+
                 val scale = thermalImage.scale
                 if (scale != null) {
-                    val minTemp = ThermalValue(15.0, TemperatureUnit.CELSIUS)
-                    val maxTemp = ThermalValue(35.0, TemperatureUnit.CELSIUS)
+                    val minTemp = ThermalValue(18.0, TemperatureUnit.CELSIUS)
+                    val maxTemp = ThermalValue(32.0, TemperatureUnit.CELSIUS)
                     scale.setRange(minTemp, maxTemp)
                 }
 
@@ -261,7 +269,8 @@ class FLIRViewModel : ViewModel() {
                         thermalImage.saveAs(file.absolutePath)
 
                         appContext?.let { context ->
-                            exportToPublicStorage(context, file)
+                            // Pasamos el nombre de la carpeta actual a la función de exportación
+                            exportToPublicStorage(context, file, currentSessionFolder)
 
                             if (!isAutoCaptureRunning) {
                                 viewModelScope.launch(Dispatchers.Main) {
@@ -293,6 +302,20 @@ class FLIRViewModel : ViewModel() {
     fun startDynamicCaptureSequence() {
         if (isAutoCaptureRunning) return
 
+        // Generamos un nombre de carpeta único para esta secuencia
+        val timeStampFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+        currentSessionFolder = "test_" + timeStampFormat.format(Date())
+
+        // Actualizamos el directorio interno para esta sesión
+        appContext?.let { context ->
+            val baseDir = context.filesDir
+            val sessionDir = java.io.File(baseDir, "TesisFLIR/$currentSessionFolder")
+            if (!sessionDir.exists()) {
+                sessionDir.mkdirs()
+            }
+            currentOutputDirectory = sessionDir.absolutePath
+        }
+
         if (currentOutputDirectory == null) {
             _errorMessage.value = "Directorio no inicializado"
             return
@@ -305,9 +328,7 @@ class FLIRViewModel : ViewModel() {
         val captureSchedule = mutableListOf<Int>()
 
         for (t in 0..60 step 5) captureSchedule.add(t)
-
         for (t in 70..300 step 10) captureSchedule.add(t)
-
         for (t in 330..600 step 30) captureSchedule.add(t)
 
         val totalCaptures = captureSchedule.size
@@ -349,12 +370,13 @@ class FLIRViewModel : ViewModel() {
         }
     }
 
-    private fun exportToPublicStorage(context: Context, privateFile: java.io.File) {
+    private fun exportToPublicStorage(context: Context, privateFile: java.io.File, sessionFolder: String) {
         val resolver = context.contentResolver
         val contentValues = android.content.ContentValues().apply {
             put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, privateFile.name)
             put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/TesisFLIR")
+            // Aquí se crea dinámicamente la subcarpeta en la galería pública
+            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/TesisFLIR/$sessionFolder")
         }
 
         val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
