@@ -302,11 +302,9 @@ class FLIRViewModel : ViewModel() {
     fun startDynamicCaptureSequence() {
         if (isAutoCaptureRunning) return
 
-        // Generamos un nombre de carpeta único para esta secuencia
         val timeStampFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
         currentSessionFolder = "test_" + timeStampFormat.format(Date())
 
-        // Actualizamos el directorio interno para esta sesión
         appContext?.let { context ->
             val baseDir = context.filesDir
             val sessionDir = java.io.File(baseDir, "TesisFLIR/$currentSessionFolder")
@@ -375,7 +373,6 @@ class FLIRViewModel : ViewModel() {
         val contentValues = android.content.ContentValues().apply {
             put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, privateFile.name)
             put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            // Aquí se crea dinámicamente la subcarpeta en la galería pública
             put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/TesisFLIR/$sessionFolder")
         }
 
@@ -403,8 +400,6 @@ class FLIRViewModel : ViewModel() {
     fun triggerCameraCapture() {
         snapshotRequested = true
     }
-
-
 
     fun stopSequence() {
         isAutoCaptureRunning = false
