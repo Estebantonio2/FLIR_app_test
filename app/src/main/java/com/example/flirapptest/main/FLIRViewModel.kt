@@ -2,6 +2,9 @@ package com.example.flirapptest.main
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.media.RingtoneManager
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -22,6 +25,7 @@ import com.flir.thermalsdk.live.discovery.DiscoveryEventListener
 import com.flir.thermalsdk.live.discovery.DiscoveryFactory
 import com.flir.thermalsdk.live.remote.OnReceived
 import com.flir.thermalsdk.live.remote.OnRemoteError
+import com.flir.thermalsdk.live.streaming.Stream
 import com.flir.thermalsdk.live.streaming.ThermalStreamer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -32,17 +36,25 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 
 enum class ConnectionState {
     DISCONNECTED, DISCOVERING, CONNECTING, CONNECTED, ERROR
 }
 
 class FLIRViewModel : ViewModel() {
-    @Volatile
-    private var snapshotRequested = false
+    companion object {
+        private const val TAG = "FLIR_TESIS"
+        private const val ALERT_REPEAT_COUNT = 5
+        private const val ALERT_REPEAT_DELAY_MS = 900L
+        private const val ALERT_THROTTLE_MS = 10_000L
+    }
+
+    private val pendingSnapshotRequests = AtomicInteger(0)
     private var snapshotCounter = 0
     private var currentOutputDirectory: String? = null
     private val usbPermissionHandler = UsbPermissionHandler()
+    private var usbPermissionRetryCount = 0
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState = _connectionState.asStateFlow()
@@ -54,7 +66,12 @@ class FLIRViewModel : ViewModel() {
     val thermalBitmap = _thermalBitmap.asStateFlow()
 
     private var thermalStreamer: ThermalStreamer? = null
+    private var connectedStream: Stream? = null
+    private var alertPlayer: MediaPlayer? = null
+    private var isAlertPlaying = false
+    private var lastAlertTime = 0L
 
+    @Volatile
     private var isAutoCaptureRunning = false
     private var currentSessionFolder = "capturas_manuales"
     private val _isAutoCaptureRunningState = MutableStateFlow(false)
@@ -120,32 +137,49 @@ class FLIRViewModel : ViewModel() {
 
     private fun connectToCamera(context: Context, identity: Identity) {
         _statusMessage.value = "Verificando permisos USB..."
+        usbPermissionRetryCount = 0
 
         if (UsbPermissionHandler.isFlirOne(identity)) {
-            usbPermissionHandler.requestFlirOnePermisson(identity, context, object : UsbPermissionHandler.UsbPermissionListener {
-                override fun permissionGranted(identity: Identity) {
-                    executeConnection(identity)
-                }
-                override fun permissionDenied(identity: Identity) {
-                    viewModelScope.launch {
-                        _errorMessage.value = "Permiso USB denegado."
-                        _connectionState.value = ConnectionState.DISCONNECTED
-                    }
-                }
-                override fun error(errorType: UsbPermissionHandler.UsbPermissionListener.ErrorType, identity: Identity) {
-                    viewModelScope.launch {
-                        _errorMessage.value = "Error al solicitar permiso USB: $errorType"
-                        _connectionState.value = ConnectionState.ERROR
-                    }
-                }
-            })
+            requestFlirOnePermission(context, identity)
         } else {
             executeConnection(identity)
         }
     }
 
+    private fun requestFlirOnePermission(context: Context, identity: Identity) {
+        usbPermissionHandler.requestFlirOnePermisson(identity, context, object : UsbPermissionHandler.UsbPermissionListener {
+            override fun permissionGranted(identity: Identity) {
+                usbPermissionRetryCount = 0
+                executeConnection(identity)
+            }
+
+            override fun permissionDenied(identity: Identity) {
+                viewModelScope.launch {
+                    _errorMessage.value = "Permiso USB denegado."
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                }
+            }
+
+            override fun error(errorType: UsbPermissionHandler.UsbPermissionListener.ErrorType, identity: Identity) {
+                if (
+                    errorType == UsbPermissionHandler.UsbPermissionListener.ErrorType.DEVICE_UNAVAILABLE_WHEN_ASKED_PERMISSION &&
+                    usbPermissionRetryCount == 0
+                ) {
+                    usbPermissionRetryCount++
+                    requestFlirOnePermission(context, identity)
+                    return
+                }
+
+                viewModelScope.launch {
+                    _errorMessage.value = "Error al solicitar permiso USB: $errorType"
+                    _connectionState.value = ConnectionState.ERROR
+                }
+            }
+        })
+    }
+
     private fun executeConnection(identity: Identity) {
-        flirCamera?.disconnect()
+        closeCamera()
         _connectionState.value = ConnectionState.CONNECTING
         _statusMessage.value = "Conectando al hardware..."
 
@@ -153,8 +187,7 @@ class FLIRViewModel : ViewModel() {
 
         val connectionListener = ConnectionStatusListener { errorCode ->
             viewModelScope.launch {
-                _connectionState.value = ConnectionState.DISCONNECTED
-                _statusMessage.value = "Se perdió la conexión: $errorCode"
+                handleConnectionLost("Se perdió la conexión: $errorCode")
             }
         }
 
@@ -179,19 +212,40 @@ class FLIRViewModel : ViewModel() {
     override fun onCleared() {
         super.onCleared()
         isAutoCaptureRunning = false
+        pendingSnapshotRequests.set(0)
+        stopAlert()
+        closeCamera()
+        DiscoveryFactory.getInstance().stop(CommunicationInterface.USB)
+    }
+
+    private fun closeCamera() {
+        stopConnectedStream()
         try {
-            val streams = flirCamera?.streams
-            if (!streams.isNullOrEmpty()) {
-                streams[0].stop()
+            flirCamera?.disconnect()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error al desconectar cámara", e)
+        } finally {
+            flirCamera = null
+            thermalStreamer = null
+        }
+    }
+
+    private fun stopConnectedStream() {
+        try {
+            connectedStream?.let { stream ->
+                if (stream.isStreaming) {
+                    stream.stop()
+                }
             }
         } catch (e: Exception) {
-            Log.e("FLIR_TESIS", "Error al detener stream", e)
+            Log.e(TAG, "Error al detener stream", e)
+        } finally {
+            connectedStream = null
         }
-        flirCamera?.disconnect()
-        DiscoveryFactory.getInstance().stop(CommunicationInterface.NETWORK)
     }
 
     fun startStream() {
+        stopConnectedStream()
         val streams = flirCamera?.streams
 
         if (streams.isNullOrEmpty()) {
@@ -200,6 +254,7 @@ class FLIRViewModel : ViewModel() {
         }
 
         val videoStream = streams.find { it.isThermal } ?: streams[0]
+        connectedStream = videoStream
         thermalStreamer = ThermalStreamer(videoStream)
 
         val onReceivedListener = OnReceived<Void> {
@@ -210,15 +265,87 @@ class FLIRViewModel : ViewModel() {
 
         val onErrorListener = OnRemoteError { errorCode ->
             viewModelScope.launch(Dispatchers.Main) {
-                _statusMessage.value = "Error crítico en el stream: $errorCode"
+                handleConnectionLost("Error crítico en el stream: $errorCode")
             }
         }
 
         try {
             videoStream.start(onReceivedListener, onErrorListener)
         } catch (e: Exception) {
-            Log.e("FLIR_TESIS", "Excepción al iniciar stream", e)
+            connectedStream = null
+            Log.e(TAG, "Excepción al iniciar stream", e)
         }
+    }
+
+    private fun handleConnectionLost(message: String) {
+        isAutoCaptureRunning = false
+        _isAutoCaptureRunningState.value = false
+        _connectionState.value = ConnectionState.DISCONNECTED
+        _statusMessage.value = message
+        _errorMessage.value = message
+        _thermalBitmap.value = null
+        pendingSnapshotRequests.set(0)
+        viewModelScope.launch(Dispatchers.IO) {
+            closeCamera()
+        }
+        playConnectionAlert()
+    }
+
+    private fun playConnectionAlert() {
+        val context = appContext ?: return
+        val now = System.currentTimeMillis()
+        if (isAlertPlaying || now - lastAlertTime < ALERT_THROTTLE_MS) return
+
+        lastAlertTime = now
+        isAlertPlaying = true
+
+        viewModelScope.launch(Dispatchers.Main) {
+            repeat(ALERT_REPEAT_COUNT) { index ->
+                playSingleAlarmTone(context)
+                if (index < ALERT_REPEAT_COUNT - 1) {
+                    delay(ALERT_REPEAT_DELAY_MS)
+                }
+            }
+            isAlertPlaying = false
+        }
+    }
+
+    private fun playSingleAlarmTone(context: Context) {
+        val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            ?: return
+
+        try {
+            alertPlayer?.release()
+            alertPlayer = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+                setDataSource(context, alarmUri)
+                setVolume(1.0f, 1.0f)
+                setOnCompletionListener { player ->
+                    player.release()
+                    if (alertPlayer === player) {
+                        alertPlayer = null
+                    }
+                }
+                prepare()
+                start()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "No se pudo reproducir la alarma de desconexión", e)
+            alertPlayer?.release()
+            alertPlayer = null
+        }
+    }
+
+    private fun stopAlert() {
+        isAlertPlaying = false
+        alertPlayer?.release()
+        alertPlayer = null
     }
 
     @Synchronized
@@ -254,10 +381,10 @@ class FLIRViewModel : ViewModel() {
                     scale.setRange(minTemp, maxTemp)
                 }
 
-                if (snapshotRequested) {
+                if (pendingSnapshotRequests.get() > 0) {
+                    var snapshotRequestConsumed = false
                     try {
-                        snapshotRequested = false
-                        val outputDir = currentOutputDirectory ?: return@withThermalImage
+                        val outputDir = currentOutputDirectory ?: error("Directorio no inicializado")
 
                         snapshotCounter++
                         val timeStampFormat = SimpleDateFormat("dd-MM-yyyy_HH-mm-ss-SSS", Locale.getDefault())
@@ -267,10 +394,15 @@ class FLIRViewModel : ViewModel() {
                         val file = java.io.File(outputDir, fileName)
 
                         thermalImage.saveAs(file.absolutePath)
+                        pendingSnapshotRequests.decrementAndGet()
+                        snapshotRequestConsumed = true
 
-                        appContext?.let { context ->
-                            // Pasamos el nombre de la carpeta actual a la función de exportación
-                            exportToPublicStorage(context, file, currentSessionFolder)
+                        val context = appContext
+                        val sessionFolder = currentSessionFolder
+                        if (context != null) {
+                            viewModelScope.launch(Dispatchers.IO) {
+                                exportToPublicStorage(context, file, sessionFolder)
+                            }
 
                             if (!isAutoCaptureRunning) {
                                 viewModelScope.launch(Dispatchers.Main) {
@@ -279,7 +411,10 @@ class FLIRViewModel : ViewModel() {
                             }
                         }
                     } catch (e: Exception) {
-                        Log.e("FLIR_TESIS", "Error al guardar", e)
+                        if (!snapshotRequestConsumed) {
+                            pendingSnapshotRequests.decrementAndGet()
+                        }
+                        Log.e(TAG, "Error al guardar", e)
                     }
                 }
 
@@ -295,7 +430,7 @@ class FLIRViewModel : ViewModel() {
                 }
             }
         } catch (e: Exception) {
-            Log.e("FLIR_TESIS", "Error procesando frame", e)
+            Log.e(TAG, "Error procesando frame", e)
         }
     }
 
@@ -345,7 +480,7 @@ class FLIRViewModel : ViewModel() {
                         delay(delaySeconds * 1000L)
                     }
 
-                    snapshotRequested = true
+                    pendingSnapshotRequests.incrementAndGet()
 
                     viewModelScope.launch(Dispatchers.Main) {
                         _statusMessage.value = "Captura ${i + 1} de $totalCaptures (T=${currentCaptureTime}s)"
@@ -360,7 +495,7 @@ class FLIRViewModel : ViewModel() {
                     }
                 }
             } catch (e: Exception) {
-                Log.e("FLIR_TESIS", "Error en secuencia", e)
+                Log.e(TAG, "Error en secuencia", e)
             } finally {
                 isAutoCaptureRunning = false
                 _isAutoCaptureRunningState.value = false
@@ -398,12 +533,13 @@ class FLIRViewModel : ViewModel() {
     }
 
     fun triggerCameraCapture() {
-        snapshotRequested = true
+        pendingSnapshotRequests.incrementAndGet()
     }
 
     fun stopSequence() {
         isAutoCaptureRunning = false
         _isAutoCaptureRunningState.value = false
+        pendingSnapshotRequests.set(0)
         _statusMessage.value = "Secuencia detenida"
     }
 }
