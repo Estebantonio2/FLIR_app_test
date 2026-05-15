@@ -28,6 +28,8 @@ import com.flir.thermalsdk.live.remote.OnRemoteError
 import com.flir.thermalsdk.live.streaming.Stream
 import com.flir.thermalsdk.live.streaming.ThermalStreamer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -73,9 +75,13 @@ class FLIRViewModel : ViewModel() {
 
     @Volatile
     private var isAutoCaptureRunning = false
+    private var autoCaptureJob: Job? = null
     private var currentSessionFolder = "capturas_manuales"
     private val _isAutoCaptureRunningState = MutableStateFlow(false)
     val isAutoCaptureRunningState = _isAutoCaptureRunningState.asStateFlow()
+
+    private val _handPlacementMessage = MutableStateFlow<String?>(null)
+    val handPlacementMessage = _handPlacementMessage.asStateFlow()
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage = _errorMessage.asStateFlow()
@@ -212,6 +218,7 @@ class FLIRViewModel : ViewModel() {
     override fun onCleared() {
         super.onCleared()
         isAutoCaptureRunning = false
+        autoCaptureJob?.cancel()
         pendingSnapshotRequests.set(0)
         stopAlert()
         closeCamera()
@@ -278,8 +285,7 @@ class FLIRViewModel : ViewModel() {
     }
 
     private fun handleConnectionLost(message: String) {
-        isAutoCaptureRunning = false
-        _isAutoCaptureRunningState.value = false
+        stopSequence(updateStatus = false)
         _connectionState.value = ConnectionState.DISCONNECTED
         _statusMessage.value = message
         _errorMessage.value = message
@@ -437,8 +443,89 @@ class FLIRViewModel : ViewModel() {
     fun startDynamicCaptureSequence() {
         if (isAutoCaptureRunning) return
 
+        if (!prepareCaptureSession("test")) return
+
+        autoCaptureJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                runCaptureSchedule(
+                    captureSchedule = createTenMinuteCaptureSchedule(),
+                    statusPrefix = "Captura",
+                    timeLabel = "T"
+                )
+
+                if (isAutoCaptureRunning) {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        _statusMessage.value = "Secuencia completada"
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Error en secuencia", e)
+            } finally {
+                isAutoCaptureRunning = false
+                _isAutoCaptureRunningState.value = false
+                _handPlacementMessage.value = null
+            }
+        }
+    }
+
+    fun startPreHandCaptureSequence() {
+        if (isAutoCaptureRunning) return
+
+        if (!prepareCaptureSession("test_pre_mano")) return
+
+        autoCaptureJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val baselineSchedule = (0..120 step 5).toList()
+                runCaptureSchedule(
+                    captureSchedule = baselineSchedule,
+                    statusPrefix = "Antes de mano",
+                    timeLabel = "T-"
+                )
+
+                for (remainingSeconds in 10 downTo 1) {
+                    if (!isAutoCaptureRunning) break
+                    withContext(Dispatchers.Main) {
+                        _handPlacementMessage.value = "Coloca la mano ahora: $remainingSeconds s"
+                        _statusMessage.value = "Mantén la mano colocada durante 10 segundos"
+                    }
+                    delay(1000L)
+                }
+
+                if (isAutoCaptureRunning) {
+                    withContext(Dispatchers.Main) {
+                        _handPlacementMessage.value = null
+                        _statusMessage.value = "Retira la mano. Iniciando secuencia de 10 minutos"
+                    }
+                }
+
+                runCaptureSchedule(
+                    captureSchedule = createTenMinuteCaptureSchedule(),
+                    statusPrefix = "Después de mano",
+                    timeLabel = "T"
+                )
+
+                if (isAutoCaptureRunning) {
+                    withContext(Dispatchers.Main) {
+                        _statusMessage.value = "Secuencia con pre-mano completada"
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Error en secuencia con pre-mano", e)
+            } finally {
+                isAutoCaptureRunning = false
+                _isAutoCaptureRunningState.value = false
+                _handPlacementMessage.value = null
+            }
+        }
+    }
+
+    private fun prepareCaptureSession(folderPrefix: String): Boolean {
         val timeStampFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
-        currentSessionFolder = "test_" + timeStampFormat.format(Date())
+        currentSessionFolder = "${folderPrefix}_" + timeStampFormat.format(Date())
 
         appContext?.let { context ->
             val baseDir = context.filesDir
@@ -451,55 +538,53 @@ class FLIRViewModel : ViewModel() {
 
         if (currentOutputDirectory == null) {
             _errorMessage.value = "Directorio no inicializado"
-            return
+            return false
         }
 
+        autoCaptureJob?.cancel()
         isAutoCaptureRunning = true
         _isAutoCaptureRunningState.value = true
+        _handPlacementMessage.value = null
         snapshotCounter = 0
+        pendingSnapshotRequests.set(0)
+        return true
+    }
 
+    private fun createTenMinuteCaptureSchedule(): List<Int> {
         val captureSchedule = mutableListOf<Int>()
-
         for (t in 0..60 step 5) captureSchedule.add(t)
         for (t in 70..300 step 10) captureSchedule.add(t)
         for (t in 330..600 step 30) captureSchedule.add(t)
+        return captureSchedule
+    }
 
+    private suspend fun runCaptureSchedule(
+        captureSchedule: List<Int>,
+        statusPrefix: String,
+        timeLabel: String
+    ) {
+        var previousCaptureTime = 0
         val totalCaptures = captureSchedule.size
 
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                var previousCaptureTime = 0
+        for (i in captureSchedule.indices) {
+            if (!isAutoCaptureRunning) break
 
-                for (i in 0 until totalCaptures) {
-                    if (!isAutoCaptureRunning) break
+            val currentCaptureTime = captureSchedule[i]
+            val delaySeconds = currentCaptureTime - previousCaptureTime
 
-                    val currentCaptureTime = captureSchedule[i]
-                    val delaySeconds = currentCaptureTime - previousCaptureTime
-
-                    if (delaySeconds > 0) {
-                        delay(delaySeconds * 1000L)
-                    }
-
-                    pendingSnapshotRequests.incrementAndGet()
-
-                    viewModelScope.launch(Dispatchers.Main) {
-                        _statusMessage.value = "Captura ${i + 1} de $totalCaptures (T=${currentCaptureTime}s)"
-                    }
-
-                    previousCaptureTime = currentCaptureTime
-                }
-
-                if (isAutoCaptureRunning) {
-                    viewModelScope.launch(Dispatchers.Main) {
-                        _statusMessage.value = "Secuencia completada ($totalCaptures capturas)"
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error en secuencia", e)
-            } finally {
-                isAutoCaptureRunning = false
-                _isAutoCaptureRunningState.value = false
+            if (delaySeconds > 0) {
+                delay(delaySeconds * 1000L)
             }
+
+            if (!isAutoCaptureRunning) break
+
+            pendingSnapshotRequests.incrementAndGet()
+
+            withContext(Dispatchers.Main) {
+                _statusMessage.value = "$statusPrefix ${i + 1} de $totalCaptures ($timeLabel=${currentCaptureTime}s)"
+            }
+
+            previousCaptureTime = currentCaptureTime
         }
     }
 
@@ -536,10 +621,15 @@ class FLIRViewModel : ViewModel() {
         pendingSnapshotRequests.incrementAndGet()
     }
 
-    fun stopSequence() {
+    fun stopSequence(updateStatus: Boolean = true) {
         isAutoCaptureRunning = false
+        autoCaptureJob?.cancel()
+        autoCaptureJob = null
         _isAutoCaptureRunningState.value = false
+        _handPlacementMessage.value = null
         pendingSnapshotRequests.set(0)
-        _statusMessage.value = "Secuencia detenida"
+        if (updateStatus) {
+            _statusMessage.value = "Secuencia detenida"
+        }
     }
 }

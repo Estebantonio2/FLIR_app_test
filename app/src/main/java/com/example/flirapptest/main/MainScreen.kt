@@ -54,6 +54,7 @@ fun MainScreen(
     val statusMessage by viewModel.statusMessage.collectAsState()
     val thermalBitmap by viewModel.thermalBitmap.collectAsState()
     val isRunning by viewModel.isAutoCaptureRunningState.collectAsState()
+    val handPlacementMessage by viewModel.handPlacementMessage.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
 
     var hasPermissions by remember { mutableStateOf(false) }
@@ -160,6 +161,25 @@ fun MainScreen(
                 }
             }
 
+            handPlacementMessage?.let { message ->
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFFFFF3CD),
+                        contentColor = Color(0xFF5F4100)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.headlineSmall,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    )
+                }
+            }
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(4.dp)
@@ -221,6 +241,19 @@ fun MainScreen(
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text("Iniciar Secuencia")
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Button(
+                                onClick = { viewModel.startPreHandCaptureSequence() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF006C4E),
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Iniciar Secuencia con 2 min Antes")
                             }
                         } else {
                             Button(
