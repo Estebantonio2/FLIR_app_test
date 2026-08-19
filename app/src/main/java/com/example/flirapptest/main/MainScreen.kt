@@ -217,7 +217,7 @@ fun MainScreen(
                             }
                         } else {
                             Button(
-                                onClick = { viewModel.startDiscovery(context) },
+                                onClick = { viewModel.startDiscovery() },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text("Buscar FLIR")

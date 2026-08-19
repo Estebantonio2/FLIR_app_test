@@ -1,17 +1,19 @@
 package com.example.flirapptest.main
 
+import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.util.Log
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.flir.thermalsdk.ErrorCode
 import com.flir.thermalsdk.ErrorCodeException
 import com.flir.thermalsdk.androidsdk.image.BitmapAndroid
 import com.flir.thermalsdk.androidsdk.live.connectivity.UsbPermissionHandler
+import com.flir.thermalsdk.image.Palette
 import com.flir.thermalsdk.image.PaletteManager
 import com.flir.thermalsdk.image.TemperatureUnit
 import com.flir.thermalsdk.image.ThermalValue
@@ -30,6 +32,7 @@ import com.flir.thermalsdk.live.streaming.ThermalStreamer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,12 +42,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.time.Duration.Companion.milliseconds
 
 enum class ConnectionState {
     DISCONNECTED, DISCOVERING, CONNECTING, CONNECTED, ERROR
 }
 
-class FLIRViewModel : ViewModel() {
+class FLIRViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val TAG = "FLIR_TESIS"
         private const val ALERT_REPEAT_COUNT = 5
@@ -52,11 +56,25 @@ class FLIRViewModel : ViewModel() {
         private const val ALERT_THROTTLE_MS = 10_000L
     }
 
+    private val appContext: Context
+        get() = getApplication<Application>().applicationContext
+
     private val pendingSnapshotRequests = AtomicInteger(0)
     private var snapshotCounter = 0
     private var currentOutputDirectory: String? = null
     private val usbPermissionHandler = UsbPermissionHandler()
     private var usbPermissionRetryCount = 0
+
+    private val frameSignalChannel = Channel<Unit>(capacity = Channel.CONFLATED)
+    private var frameProcessingJob: Job? = null
+
+    private val ironPalette: Palette by lazy {
+        PaletteManager.getDefaultPalettes().firstOrNull {
+            it.name.equals("iron", ignoreCase = true)
+        } ?: PaletteManager.getDefaultPalettes().first()
+    }
+    private val minScaleTemp = ThermalValue(18.0, TemperatureUnit.CELSIUS)
+    private val maxScaleTemp = ThermalValue(32.0, TemperatureUnit.CELSIUS)
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState = _connectionState.asStateFlow()
@@ -89,15 +107,11 @@ class FLIRViewModel : ViewModel() {
     var flirCamera: Camera? = null
         private set
 
-    private var appContext: Context? = null
-
     fun clearError() {
         _errorMessage.value = null
     }
 
-    fun startDiscovery(context: Context) {
-        this.appContext = context.applicationContext
-
+    fun startDiscovery(context: Context = appContext) {
         val baseDir = context.filesDir
         val experimentDir = java.io.File(baseDir, "TesisFLIR")
         if (!experimentDir.exists()) {
@@ -219,6 +233,7 @@ class FLIRViewModel : ViewModel() {
         super.onCleared()
         isAutoCaptureRunning = false
         autoCaptureJob?.cancel()
+        frameProcessingJob?.cancel()
         pendingSnapshotRequests.set(0)
         stopAlert()
         closeCamera()
@@ -238,6 +253,8 @@ class FLIRViewModel : ViewModel() {
     }
 
     private fun stopConnectedStream() {
+        frameProcessingJob?.cancel()
+        frameProcessingJob = null
         try {
             connectedStream?.let { stream ->
                 if (stream.isStreaming) {
@@ -264,10 +281,14 @@ class FLIRViewModel : ViewModel() {
         connectedStream = videoStream
         thermalStreamer = ThermalStreamer(videoStream)
 
-        val onReceivedListener = OnReceived<Void> {
-            viewModelScope.launch(Dispatchers.IO) {
+        frameProcessingJob = viewModelScope.launch(Dispatchers.IO) {
+            for (signal in frameSignalChannel) {
                 refreshThermalFrame()
             }
+        }
+
+        val onReceivedListener = OnReceived<Void> {
+            frameSignalChannel.trySend(Unit)
         }
 
         val onErrorListener = OnRemoteError { errorCode ->
@@ -298,7 +319,7 @@ class FLIRViewModel : ViewModel() {
     }
 
     private fun playConnectionAlert() {
-        val context = appContext ?: return
+        val context = appContext
         val now = System.currentTimeMillis()
         if (isAlertPlaying || now - lastAlertTime < ALERT_THROTTLE_MS) return
 
@@ -354,7 +375,6 @@ class FLIRViewModel : ViewModel() {
         alertPlayer = null
     }
 
-    @Synchronized
     private fun refreshThermalFrame() {
         try {
             try {
@@ -373,19 +393,8 @@ class FLIRViewModel : ViewModel() {
                 if (thermalImage == null) return@withThermalImage
 
                 thermalImage.fusion?.setFusionMode(FusionMode.THERMAL_ONLY)
-
-                val ironPalette = PaletteManager.getDefaultPalettes().firstOrNull {
-                    it.name.equals("iron", ignoreCase = true)
-                } ?: PaletteManager.getDefaultPalettes().first()
-
                 thermalImage.palette = ironPalette
-
-                val scale = thermalImage.scale
-                if (scale != null) {
-                    val minTemp = ThermalValue(18.0, TemperatureUnit.CELSIUS)
-                    val maxTemp = ThermalValue(32.0, TemperatureUnit.CELSIUS)
-                    scale.setRange(minTemp, maxTemp)
-                }
+                thermalImage.scale?.setRange(minScaleTemp, maxScaleTemp)
 
                 if (pendingSnapshotRequests.get() > 0) {
                     var snapshotRequestConsumed = false
@@ -405,15 +414,13 @@ class FLIRViewModel : ViewModel() {
 
                         val context = appContext
                         val sessionFolder = currentSessionFolder
-                        if (context != null) {
-                            viewModelScope.launch(Dispatchers.IO) {
-                                exportToPublicStorage(context, file, sessionFolder)
-                            }
+                        viewModelScope.launch(Dispatchers.IO) {
+                            exportToPublicStorage(context, file, sessionFolder)
+                        }
 
-                            if (!isAutoCaptureRunning) {
-                                viewModelScope.launch(Dispatchers.Main) {
-                                    _statusMessage.value = "Guardado y Exportado: $fileName"
-                                }
+                        if (!isAutoCaptureRunning) {
+                            viewModelScope.launch(Dispatchers.Main) {
+                                _statusMessage.value = "Guardado y Exportado: $fileName"
                             }
                         }
                     } catch (e: Exception) {
