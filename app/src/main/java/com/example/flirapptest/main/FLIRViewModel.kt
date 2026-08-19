@@ -309,7 +309,7 @@ class FLIRViewModel : ViewModel() {
             repeat(ALERT_REPEAT_COUNT) { index ->
                 playSingleAlarmTone(context)
                 if (index < ALERT_REPEAT_COUNT - 1) {
-                    delay(ALERT_REPEAT_DELAY_MS)
+                    delay(ALERT_REPEAT_DELAY_MS.milliseconds)
                 }
             }
             isAlertPlaying = false
@@ -448,7 +448,7 @@ class FLIRViewModel : ViewModel() {
         autoCaptureJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 runCaptureSchedule(
-                    captureSchedule = createTenMinuteCaptureSchedule(),
+                    captureSchedule = createFifteenMinuteCaptureSchedule(),
                     statusPrefix = "Captura",
                     timeLabel = "T"
                 )
@@ -490,18 +490,18 @@ class FLIRViewModel : ViewModel() {
                         _handPlacementMessage.value = "Coloca la mano ahora: $remainingSeconds s"
                         _statusMessage.value = "Mantén la mano colocada durante 10 segundos"
                     }
-                    delay(1000L)
+                    delay(1000L.milliseconds)
                 }
 
                 if (isAutoCaptureRunning) {
                     withContext(Dispatchers.Main) {
                         _handPlacementMessage.value = null
-                        _statusMessage.value = "Retira la mano. Iniciando secuencia de 10 minutos"
+                        _statusMessage.value = "Retira la mano. Iniciando secuencia de 15 minutos"
                     }
                 }
 
                 runCaptureSchedule(
-                    captureSchedule = createTenMinuteCaptureSchedule(),
+                    captureSchedule = createFifteenMinuteCaptureSchedule(),
                     statusPrefix = "Después de mano",
                     timeLabel = "T"
                 )
@@ -550,11 +550,12 @@ class FLIRViewModel : ViewModel() {
         return true
     }
 
-    private fun createTenMinuteCaptureSchedule(): List<Int> {
+    private fun createFifteenMinuteCaptureSchedule(): List<Int> {
         val captureSchedule = mutableListOf<Int>()
-        for (t in 0..60 step 5) captureSchedule.add(t)
-        for (t in 70..300 step 10) captureSchedule.add(t)
-        for (t in 330..600 step 30) captureSchedule.add(t)
+        for (t in 0..60 step 5) captureSchedule.add(t)       // 0 a 1 min: cada 5s (13 capturas)
+        for (t in 70..240 step 10) captureSchedule.add(t)   // 1 a 4 min: cada 10s (18 capturas)
+        for (t in 260..480 step 20) captureSchedule.add(t)  // 4 a 8 min: cada 20s (12 capturas)
+        for (t in 510..900 step 30) captureSchedule.add(t)  // 8 a 15 min: cada 30s (14 capturas)
         return captureSchedule
     }
 
@@ -573,7 +574,7 @@ class FLIRViewModel : ViewModel() {
             val delaySeconds = currentCaptureTime - previousCaptureTime
 
             if (delaySeconds > 0) {
-                delay(delaySeconds * 1000L)
+                delay((delaySeconds * 1000L).milliseconds)
             }
 
             if (!isAutoCaptureRunning) break
